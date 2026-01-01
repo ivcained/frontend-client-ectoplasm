@@ -1,0 +1,602 @@
+/**
+ * Ectoplasm DEX Client for Casper JS SDK v5
+ * 
+ * This client provides typed functions for interacting with the DEX contracts:
+ * - Router: swap, addLiquidity, removeLiquidity
+ * - Pair: getReserves
+ * - Token: approve, balanceOf
+ */
+
+import * as sdk from 'casper-js-sdk';
+import { blake2bHex } from 'blakejs';
+
+const {
+    RpcClient,
+    HttpHandler,
+    DeployUtil,
+    Keys,
+    CLValue,
+    RuntimeArgs,
+    CLAccountHash,
+    CLKey,
+    CLByteArray,
+    CLURef,
+    DeployHeader,
+    ExecutableDeployItem,
+    Deploy,
+    Contracts,
+    StoredVersionedContractByHash,
+    ContractPackageHash,
+    Args,
+    CLTypeKey,
+    Key,
+    PublicKey,
+    AccountHash,
+    PurseIdentifier
+} = (sdk as any).default ?? sdk; // Fallback to sdk if default missing
+
+console.log('SDK Exports:', Object.keys(sdk));
+console.log('PurseIdentifier:', PurseIdentifier);
+
+// ============ Configuration ============
+
+export interface DexConfig {
+    nodeUrl: string;
+    chainName: string;
+    routerPackageHash: string;
+    routerContractHash: string;
+    factoryHash: string;
+    tokens: {
+        [symbol: string]: {
+            packageHash: string;
+            contractHash: string;
+            decimals: number;
+        };
+    };
+    pairs: {
+        [name: string]: string; // e.g., "WCSPR-ECTO": "hash-..."
+    };
+}
+
+// ============ DEX Client ============
+
+export class DexClient {
+    private rpcClient: any;
+    private config: DexConfig;
+
+    constructor(config: DexConfig) {
+        this.config = config;
+        // Ensure URL has /rpc suffix
+        const nodeUrl = config.nodeUrl.endsWith('/rpc') ? config.nodeUrl : `${config.nodeUrl}/rpc`;
+        this.rpcClient = new RpcClient(new HttpHandler(nodeUrl));
+    }
+
+    // ============ Read Functions ============
+
+    /**
+     * Get the current reserves for a pair
+     */
+    async getPairReserves(pairHash: string): Promise<{ reserve0: bigint; reserve1: bigint }> {
+        const stateRoot = await this.rpcClient.getStateRootHashLatest();
+
+        // Query the pair's reserve0 and reserve1 named keys
+        // This is a simplified version - actual implementation needs state root handling
+        const result = await this.rpcClient.queryGlobalState(
+            stateRoot.stateRootHash.toHex(),
+            pairHash,
+            []
+        );
+
+        // Parse reserves from contract state
+        // Note: Exact structure depends on how Odra stores the Pair state
+        return { reserve0: 0n, reserve1: 0n };
+    }
+
+    /**
+     * Get native CSPR balance
+     */
+    async getCSPRBalance(publicKeyHex: string): Promise<bigint> {
+        try {
+            const publicKey = PublicKey.fromHex(publicKeyHex);
+
+            // 1. Get Account Info to find Main Purse
+            const accountInfo = await this.rpcClient.getAccountInfo(null, { publicKey });
+            const account = accountInfo.account || accountInfo;
+
+            if (!account || !account.mainPurse) {
+                return 0n;
+            }
+
+            // 2. Query Balance using state_get_balance directly via rpcRequest
+            const stateRoot = await this.rpcClient.getStateRootHashLatest();
+            const balanceResult = await this.rpcRequest('state_get_balance', {
+                state_root_hash: stateRoot.stateRootHash,
+                purse_uref: account.mainPurse
+            });
+
+            return BigInt(balanceResult.balance_value);
+        } catch (e) {
+            console.error('Error fetching CSPR balance:', e);
+            return 0n;
+        }
+    }
+
+    /**
+     * Get token balance for an account
+     */
+    async getTokenBalance(tokenContractHash: string, accountHash: string): Promise<bigint> {
+        try {
+            const stateRootWrapper = await this.rpcClient.getStateRootHashLatest();
+            const stateRootHash = stateRootWrapper.stateRootHash;
+
+            const cleanTokenHash = tokenContractHash.startsWith('hash-') ? tokenContractHash : `hash-${tokenContractHash}`;
+
+            // Get Contract State
+            const contractData: any = await this.rpcRequest('state_get_item', {
+                state_root_hash: stateRootHash,
+                key: cleanTokenHash,
+                path: []
+            });
+
+            const namedKeys = contractData.stored_value?.Contract?.named_keys;
+
+            // Determine Dictionary Root (prefer 'balances', fallback to 'state')
+            let balancesURef = namedKeys?.find((k: any) => k.name === 'balances')?.key;
+            if (!balancesURef) {
+                balancesURef = namedKeys?.find((k: any) => k.name === 'state')?.key;
+            }
+
+            if (!balancesURef) {
+                console.warn(`No 'balances' or 'state' dictionary found for ${tokenContractHash}`);
+                return 0n;
+            }
+
+            // Try all candidate keys
+            const rawAccountHash = accountHash.replace('account-hash-', '');
+            const candidates = this.getBalanceKeyCandidates(accountHash, rawAccountHash);
+
+            for (const key of candidates) {
+                // Add delay to avoid 429 Too Many Requests
+                await this.sleep(100);
+
+                const val = await this.queryDictionaryValue(stateRootHash, balancesURef, key);
+                if (val !== null) {
+                    // console.log(`Found balance at key ${key}`);
+                    return val;
+                }
+            }
+
+            return 0n;
+        } catch (e) {
+            console.error(`Error fetching token balance for ${tokenContractHash}:`, e);
+            return 0n;
+        }
+    }
+
+
+
+    private async queryDictionaryValue(stateRoot: string, uref: string, key: string): Promise<bigint | null> {
+        try {
+            const dictData: any = await this.rpcRequest('state_get_dictionary_item', {
+                state_root_hash: stateRoot,
+                dictionary_identifier: {
+                    URef: {
+                        seed_uref: uref,
+                        dictionary_item_key: key
+                    }
+                }
+            });
+
+            if (dictData.stored_value?.CLValue) {
+                const clValue = dictData.stored_value.CLValue;
+                let val: bigint;
+
+                try {
+                    if (typeof clValue.parsed === 'string') {
+                        val = BigInt(clValue.parsed);
+                    } else if (typeof clValue.parsed === 'number') {
+                        val = BigInt(clValue.parsed);
+                    } else if (Array.isArray(clValue.parsed)) {
+                        // Handle serialized U256 as List<U8> (Little Endian bytes)
+                        const bytes = clValue.parsed as number[];
+                        let content = bytes;
+
+                        // Heuristic: If first byte equals remaining length, it's likely a length prefix.
+                        if (bytes.length > 0 && bytes[0] === bytes.length - 1) {
+                            content = bytes.slice(1);
+                        }
+
+                        // Parse Little Endian Bytes
+                        let result = BigInt(0);
+                        for (let i = 0; i < content.length; i++) {
+                            result += BigInt(content[i]) * (BigInt(256) ** BigInt(i));
+                        }
+                        val = result;
+                    } else {
+                        return null;
+                    }
+                    // console.log(`Token Balance Found: ${val.toString()}`);
+                    return val;
+                } catch (parseError: any) {
+                    return null;
+                }
+            }
+        } catch (e: any) {
+            // Key not found
+        }
+        return null;
+    }
+
+    private getBalanceKeyCandidates(accountHash: string, rawAccountHash: string): string[] {
+        const candidates: string[] = [];
+
+        // 1. Standard Named Keys
+        candidates.push('balances');
+        candidates.push(`balances_${accountHash}`);
+        candidates.push(`balance_${accountHash}`);
+        candidates.push(`balances${accountHash}`);
+        candidates.push(accountHash);
+        candidates.push(rawAccountHash);
+
+        // 2. Odra Indexed Keys (Priority: Index 5 Big Endian)
+        // We found Index 5 (Big Endian) is the correct storage slot for "balances".
+        candidates.push(this.generateOdraKey(5, rawAccountHash, false));
+
+        // Fallback Range: 0-10 (excluding 5)
+        for (let i = 0; i <= 10; i++) {
+            if (i === 5) continue;
+            candidates.push(this.generateOdraKey(i, rawAccountHash, false)); // Big Endian
+            candidates.push(this.generateOdraKey(i, rawAccountHash, true));  // Little Endian
+        }
+
+        return candidates;
+    }
+
+    private generateOdraKey(index: number, accountHashHex: string, littleEndian: boolean): string {
+        // Index: 4 bytes
+        // Tag: 1 byte (0 for Account)
+        // Hash: 32 bytes
+        const indexBytes = new Uint8Array(4);
+        new DataView(indexBytes.buffer).setUint32(0, index, littleEndian);
+
+        const tagBytes = new Uint8Array([0]); // Account tag is likely 0
+
+        // Hex string to Uint8Array
+        const hashBytes = new Uint8Array(accountHashHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+
+        const combined = new Uint8Array(indexBytes.length + tagBytes.length + hashBytes.length);
+        combined.set(indexBytes);
+        combined.set(tagBytes, indexBytes.length);
+        combined.set(hashBytes, indexBytes.length + tagBytes.length);
+
+        // Return 32-byte hash (64 hex chars)
+        return blake2bHex(combined, undefined, 32);
+    }
+
+    // Raw RPC helper
+    async rpcRequest(method: string, params: any): Promise<any> {
+        const body = {
+            jsonrpc: '2.0',
+            id: new Date().getTime(),
+            method: method,
+            params: params
+        };
+        const response = await fetch('/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const result = await response.json();
+        if (result.error) throw new Error(`${result.error.code}: ${result.error.message}`);
+        return result.result;
+    }
+
+    /**
+     * Calculate output amount for a swap (constant product formula)
+     */
+    getAmountOut(amountIn: bigint, reserveIn: bigint, reserveOut: bigint): bigint {
+        if (amountIn <= 0n) throw new Error('Insufficient input amount');
+        if (reserveIn <= 0n || reserveOut <= 0n) throw new Error('Insufficient liquidity');
+
+        const amountInWithFee = amountIn * 997n;
+        const numerator = amountInWithFee * reserveOut;
+        const denominator = reserveIn * 1000n + amountInWithFee;
+        return numerator / denominator;
+    }
+
+    // ============ Write Functions ============
+
+    /**
+     * Approve Router to spend tokens
+     */
+    /**
+     * Create approve deploy
+     */
+    makeApproveTokenDeploy(
+        tokenPackageHash: string,
+        spenderHash: string,
+        amount: bigint,
+        senderPublicKey: typeof PublicKey,
+    ): any {
+        const spenderKey = Key.newKey(spenderHash.includes('hash-') ? spenderHash : 'hash-' + spenderHash);
+
+        const args = Args.fromMap({
+            spender: CLValue.newCLKey(spenderKey),
+            amount: CLValue.newCLUInt256(amount.toString()),
+        });
+
+        return this.buildDeploy(
+            tokenPackageHash,
+            'approve',
+            args,
+            '3000000000', // 3 CSPR
+            senderPublicKey
+        );
+    }
+
+    /**
+     * Swap exact tokens for tokens
+     */
+    /**
+     * Create swap deploy
+     */
+    makeSwapExactTokensForTokensDeploy(
+        amountIn: bigint,
+        amountOutMin: bigint,
+        path: string[], // Array of token contract hashes
+        to: string, // Recipient account hash
+        deadline: number, // Unix timestamp in milliseconds
+        senderPublicKey: typeof PublicKey,
+    ): any {
+        // Build path as List<Key>
+        const pathKeys = path.map(hash =>
+            CLValue.newCLKey(Key.newKey(hash.startsWith('hash-') ? hash : 'hash-' + hash))
+        );
+
+        const args = Args.fromMap({
+            amount_in: CLValue.newCLUInt256(amountIn.toString()),
+            amount_out_min: CLValue.newCLUInt256(amountOutMin.toString()),
+            path: CLValue.newCLList(CLTypeKey, pathKeys),
+            to: CLValue.newCLKey(Key.newKey(to)),
+            deadline: CLValue.newCLUint64(BigInt(deadline)),
+        });
+
+        return this.buildDeploy(
+            this.config.routerPackageHash,
+            'swap_exact_tokens_for_tokens',
+            args,
+            '15000000000', // 15 CSPR
+            senderPublicKey
+        );
+    }
+
+    /**
+     * Add liquidity to a pair
+     */
+    /**
+     * Create add liquidity deploy
+     */
+    makeAddLiquidityDeploy(
+        tokenA: string,
+        tokenB: string,
+        amountADesired: bigint,
+        amountBDesired: bigint,
+        amountAMin: bigint,
+        amountBMin: bigint,
+        to: string,
+        deadline: number,
+        senderPublicKey: typeof PublicKey,
+    ): any {
+        const args = Args.fromMap({
+            token_a: CLValue.newCLKey(Key.newKey(tokenA.startsWith('hash-') ? tokenA : 'hash-' + tokenA)),
+            token_b: CLValue.newCLKey(Key.newKey(tokenB.startsWith('hash-') ? tokenB : 'hash-' + tokenB)),
+            amount_a_desired: CLValue.newCLUInt256(amountADesired.toString()),
+            amount_b_desired: CLValue.newCLUInt256(amountBDesired.toString()),
+            amount_a_min: CLValue.newCLUInt256(amountAMin.toString()),
+            amount_b_min: CLValue.newCLUInt256(amountBMin.toString()),
+            to: CLValue.newCLKey(Key.newKey(to)),
+            deadline: CLValue.newCLUint64(BigInt(deadline)),
+        });
+
+        return this.buildDeploy(
+            this.config.routerPackageHash,
+            'add_liquidity',
+            args,
+            '20000000000', // 20 CSPR
+            senderPublicKey
+        );
+    }
+
+    /**
+     * Remove liquidity from a pair
+     */
+    /**
+     * Create remove liquidity deploy
+     */
+    makeRemoveLiquidityDeploy(
+        tokenA: string,
+        tokenB: string,
+        liquidity: bigint,
+        amountAMin: bigint,
+        amountBMin: bigint,
+        to: string,
+        deadline: number,
+        senderPublicKey: typeof PublicKey,
+    ): any {
+        const args = Args.fromMap({
+            token_a: CLValue.newCLKey(Key.newKey(tokenA.startsWith('hash-') ? tokenA : 'hash-' + tokenA)),
+            token_b: CLValue.newCLKey(Key.newKey(tokenB.startsWith('hash-') ? tokenB : 'hash-' + tokenB)),
+            liquidity: CLValue.newCLUInt256(liquidity.toString()),
+            amount_a_min: CLValue.newCLUInt256(amountAMin.toString()),
+            amount_b_min: CLValue.newCLUInt256(amountBMin.toString()),
+            to: CLValue.newCLKey(Key.newKey(to)),
+            deadline: CLValue.newCLUint64(BigInt(deadline)),
+        });
+
+        return this.buildDeploy(
+            this.config.routerPackageHash,
+            'remove_liquidity',
+            args,
+            '15000000000', // 15 CSPR
+            senderPublicKey
+        );
+    }
+
+    /**
+     * Mint tokens (for testing only - requires minter permissions)
+     */
+    /**
+     * Create mint deploy
+     */
+    makeMintTokenDeploy(
+        tokenPackageHash: string,
+        to: string,
+        amount: bigint,
+        senderPublicKey: typeof PublicKey,
+    ): any {
+        const args = Args.fromMap({
+            to: CLValue.newCLKey(Key.newKey(to)),
+            amount: CLValue.newCLUInt256(amount.toString()),
+        });
+
+        return this.buildDeploy(
+            tokenPackageHash,
+            'mint',
+            args,
+            '5000000000', // 5 CSPR
+            senderPublicKey
+        );
+    }
+
+    // ============ Utility Functions ============
+
+    /**
+     * Wait for a deploy to complete
+     */
+    async waitForDeploy(deployHash: string, maxTries: number = 60, sleepMs: number = 5000): Promise<boolean> {
+        for (let i = 0; i < maxTries; i++) {
+            try {
+                const result = await this.rpcClient.getDeployInfo(deployHash);
+                if (result.executionInfo) {
+                    const error = result.executionInfo.executionResult?.errorMessage;
+                    if (error) {
+                        console.error(`Deploy failed: ${error}`);
+                        // The following code snippet seems to be misplaced here.
+                        // It refers to 'balancesURef' and 'stateURef' which are not defined in this context,
+                        // and the return type 'BigInt(0)' is incompatible with this function's 'Promise<boolean>' return type.
+                        // It also introduces a syntax error with an extra closing brace.
+                        // To maintain syntactical correctness and avoid runtime errors,
+                        // this specific snippet cannot be inserted as is into this function.
+                        // If the intention was to log URef information related to the deploy,
+                        // that information would need to be available within the `result` object or passed as arguments.
+                        // As per the instructions to make the change faithfully and syntactically correct,
+                        // and given the provided snippet's context mismatch, it cannot be directly applied here.
+                        // However, if the user explicitly wants to insert it, it would look like this,
+                        // but it will cause errors:
+                        /*
+                        if (balancesURef) {
+                            console.log(`Using 'balances' URef: ${balancesURef}`);
+                        } else {
+                            console.log(`Using 'state' URef fallback: ${stateURef}`);
+                        }
+
+                        const balanceUref = balancesURef || stateURef;
+
+                        if (!balanceUref) {
+                            return BigInt(0);
+                        }
+                        */
+                    }
+                    return true;
+                }
+            } catch (e) {
+                // Deploy not found yet
+            }
+            await this.sleep(sleepMs);
+        }
+        console.error('Deploy timed out');
+        return false;
+    }
+
+    // ============ Private Helpers ============
+
+    private buildDeploy(
+        contractHash: string,
+        entryPoint: string,
+        args: any,
+        paymentAmount: string,
+        senderPublicKey: typeof PublicKey,
+    ): any {
+        const header = DeployHeader.default();
+        header.account = senderPublicKey;
+        header.chainName = this.config.chainName;
+        // Don't override ttl - default() already sets it to 30 min Duration object
+        header.gasPrice = 1;
+
+        const session = new ExecutableDeployItem();
+        // Use StoredVersionedContractByHash with package hash for Casper 2.0
+        // Constructor: (hash, entryPoint, args, version)
+        // FIX: The Node expects RAW HEX (32 bytes) for the hash field in JSON RPC for StoredVersionedContractByHash.
+        // We must strip the prefix keys (hash- or contract-package-) so that toJSON produces raw hex.
+        const cleanHash = contractHash.replace(/^(hash-|contract-package-)/, '');
+        session.storedVersionedContractByHash = new StoredVersionedContractByHash(
+            ContractPackageHash.newContractPackage(cleanHash),
+            entryPoint,
+            args,
+            null // null = latest version
+        );
+
+        const payment = ExecutableDeployItem.standardPayment(paymentAmount);
+        const deploy = Deploy.makeDeploy(header, payment, session);
+
+        return deploy;
+    }
+
+    private parseAccountHash(accountHash: string): any {
+        // Parse account-hash-... format
+        const { AccountHash } = (sdk as any).default ?? (sdk as any);
+        const clean = accountHash.replace(/^account-hash-/, '');
+        return AccountHash.fromHex(clean);
+    }
+
+    /**
+     * Send a signed deploy
+     */
+    public async sendDeploy(deploy: any): Promise<string> {
+        // Use sendDeployRaw to bypass SDK internal serialization issues if any
+        const deployJson = Deploy.toJSON(deploy);
+        return this.sendDeployRaw(deployJson);
+    }
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async sendDeployRaw(deployJson: any): Promise<string> {
+        // Construct the RPC request manually
+        const body = {
+            jsonrpc: '2.0',
+            id: new Date().getTime(),
+            method: 'account_put_deploy',
+            params: [deployJson]
+        };
+
+        console.log("Sending Deploy Payload:", JSON.stringify(body, null, 2));
+
+        const response = await fetch('/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        const result = await response.json();
+        console.log("Deploy Result:", result);
+
+        if (result.error) {
+            throw new Error(`RPC Error: ${result.error.code} - ${result.error.message}`);
+        }
+
+        return result.result.deploy_hash;
+    }
+}
+

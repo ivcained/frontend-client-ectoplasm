@@ -1,0 +1,102 @@
+.app-container {
+  max-width: 800px;
+  margin: 0 auto;
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+}
+
+.tabs {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.tabs button {
+    padding: 0.5rem 1rem;
+    border: none;
+    background: #eee;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.tabs button.active {
+    background: #646cff;
+    color: white;
+}
+
+.card {
+    background: #1a1a1a;
+    padding: 2rem;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    max-width: 500px;
+    margin: 0 auto;
+    border: 1px solid #333;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+    text-align: left;
+}
+
+label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #ccc;
+}
+
+input, select {
+    width: 100%;
+    padding: 0.8rem;
+    font-size: 1rem;
+    background: #0f0f0f;
+    border: 1px solid #333;
+    border-radius: 6px;
+    box-sizing: border-box; 
+    color: white;
+    transition: border-color 0.2s;
+}
+
+input:focus, select:focus {
+    outline: none;
+    border-color: #646cff;
+}
+
+button {
+    background: #646cff;
+    color: white;
+    border: none;
+    padding: 0.8rem 1.5rem;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 1rem;
+    transition: background 0.2s;
+}
+
+button:hover {
+    background: #535bf2;
+}
+
+button:disabled {
+    background: #444;
+    color: #888;
+    cursor: not-allowed;
+}
+
+.tabs button {
+    background: #1a1a1a;
+    color: #888;
+    border: 1px solid #333;
+}
+
+.tabs button.active {
+    background: #646cff;
+    color: white;
+    border-color: #646cff;
+}
+
