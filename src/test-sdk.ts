@@ -46,10 +46,8 @@ function loadSecretKey(): any {
   const keyPath = path.join(__dirname, "..", "keys", "secret_key.pem");
   const keyContent = fs.readFileSync(keyPath, "utf-8");
   // Parse PEM and create key pair
-  return (
-    sdk.Keys?.Ed25519?.parsePrivateKeyFile?.(keyPath) ??
-    (sdk as any).default?.Keys?.Ed25519?.parsePrivateKeyFile?.(keyPath)
-  );
+  const Keys = (sdk as any).default?.Keys ?? (sdk as any).Keys;
+  return Keys?.Ed25519?.parsePrivateKeyFile?.(keyPath);
 }
 
 // Configuration
