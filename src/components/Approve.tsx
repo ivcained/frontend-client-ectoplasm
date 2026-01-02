@@ -26,7 +26,7 @@ export const Approve: React.FC<Props> = ({ wallet, log }) => {
             const decimals = config.tokens[token].decimals;
             const amountBI = BigInt(parseFloat(amount) * (10 ** decimals));
             const tokenHash = config.tokens[token].packageHash;
-            const spender = config.routerContractHash;
+            const spender = config.routerPackageHash;
 
             log(`Approving ${amount} ${token} for Router...`);
             const deploy = dex.makeApproveTokenDeploy(

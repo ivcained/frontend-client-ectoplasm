@@ -48,12 +48,12 @@ export const Liquidity: React.FC<Props> = ({ wallet, log }) => {
 
             log(`Adding Liquidity: ${amountA} WCSPR + ${amountB} ECTO`);
             const deploy = dex.makeAddLiquidityDeploy(
-                config.tokens.WCSPR.contractHash,
-                config.tokens.ECTO.contractHash,
+                config.tokens.WCSPR.packageHash,
+                config.tokens.ECTO.packageHash,
                 amtABI,
                 amtBBI,
-                amtABI, // minA
-                amtBBI, // minB
+                0n, // minA (no slippage protection)
+                0n, // minB (no slippage protection)
                 `account-hash-${wallet.publicKey.accountHash().toHex()}`,
                 Date.now() + 1800000,
                 wallet.publicKey
@@ -74,8 +74,8 @@ export const Liquidity: React.FC<Props> = ({ wallet, log }) => {
 
             log(`Removing Liquidity: ${removeAmount} LP Tokens`);
             const deploy = dex.makeRemoveLiquidityDeploy(
-                config.tokens.WCSPR.contractHash,
-                config.tokens.ECTO.contractHash,
+                config.tokens.WCSPR.packageHash,
+                config.tokens.ECTO.packageHash,
                 liqBI,
                 0n,
                 0n,

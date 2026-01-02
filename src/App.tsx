@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import './App.css';
 import { useWallet } from './hooks/useWallet';
 import { Header } from './components/Header';
@@ -46,14 +46,14 @@ function App() {
     }
   };
   
-  // Poll balance occasionally
-  useState(() => {
+  // Poll balances (and fetch immediately on connect)
+  useEffect(() => {
+    if (!wallet.isConnected || !wallet.activeKey || !wallet.publicKey) return;
+    fetchBalance();
     const i = setInterval(fetchBalance, 10000);
     return () => clearInterval(i);
-  });
-  
-  // Trigger fetch on connect
-  if (wallet.isConnected && balance === '0' && wcsprBalance === '0') fetchBalance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.isConnected, wallet.activeKey, wallet.publicKey]);
 
   return (
     <div className="app-container">
