@@ -2,21 +2,22 @@ import React, { createContext, useContext, useState } from 'react';
 import { DexClient, type DexConfig } from '../dex-client';
 
 // Configuration from Environment Variables
+const ENV = import.meta.env as any;
 const CONFIG: DexConfig = {
-    nodeUrl: import.meta.env.VITE_NODE_ADDRESS || '',
-    chainName: import.meta.env.VITE_CHAIN_NAME || '',
-    routerPackageHash: import.meta.env.VITE_ROUTER_PACKAGE_HASH || '',
-    routerContractHash: import.meta.env.VITE_ROUTER_CONTRACT_HASH || '',
-    factoryHash: import.meta.env.VITE_FACTORY_CONTRACT_HASH || '',
+    nodeUrl: ENV.NODE_ADDRESS || ENV.VITE_NODE_ADDRESS || '',
+    chainName: ENV.CHAIN_NAME || ENV.VITE_CHAIN_NAME || '',
+    routerPackageHash: ENV.ROUTER_PACKAGE_HASH || ENV.VITE_ROUTER_PACKAGE_HASH || '',
+    routerContractHash: ENV.ROUTER_CONTRACT_HASH || ENV.VITE_ROUTER_CONTRACT_HASH || '',
+    factoryHash: ENV.FACTORY_CONTRACT_HASH || ENV.VITE_FACTORY_CONTRACT_HASH || '',
     tokens: {
         WCSPR: {
-            packageHash: import.meta.env.VITE_WCSPR_PACKAGE_HASH || '',
-            contractHash: import.meta.env.VITE_WCSPR_CONTRACT_HASH || '',
+            packageHash: ENV.WCSPR_PACKAGE_HASH || ENV.VITE_WCSPR_PACKAGE_HASH || '',
+            contractHash: ENV.WCSPR_CONTRACT_HASH || ENV.VITE_WCSPR_CONTRACT_HASH || '',
             decimals: 9,
         },
         ECTO: {
-            packageHash: import.meta.env.VITE_ECTO_PACKAGE_HASH || '',
-            contractHash: import.meta.env.VITE_ECTO_CONTRACT_HASH || '',
+            packageHash: ENV.ECTO_PACKAGE_HASH || ENV.VITE_ECTO_PACKAGE_HASH || '',
+            contractHash: ENV.ECTO_CONTRACT_HASH || ENV.VITE_ECTO_CONTRACT_HASH || '',
             decimals: 18,
         },
     },
